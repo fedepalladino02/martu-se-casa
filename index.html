@@ -2,7 +2,16 @@
 <html lang="es">
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
-<script>window.MARTU_STANDALONE = true;</script>
+<link rel="manifest" href="manifest.webmanifest">
+<meta name="theme-color" content="#2D48A6">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="default">
+<meta name="apple-mobile-web-app-title" content="The Party">
+<link rel="apple-touch-icon" href="icon-180.png">
+<link rel="icon" type="image/png" sizes="32x32" href="icon-32.png">
+<script>window.MARTU_STANDALONE = true;
+if ("serviceWorker" in navigator) addEventListener("load", () => navigator.serviceWorker.register("sw.js").catch(() => {}));</script>
 <title>Martu se casa</title>
 <meta name="claude:viewport-fit-sides" content="cover">
 <link rel="preconnect" href="https://fonts.googleapis.com">
@@ -543,7 +552,7 @@ const store = {
   get(k,d){ try{ const v = localStorage.getItem("martu2."+k); return v ? JSON.parse(v) : d; }catch(e){ return d; } },
   set(k,v){ try{ localStorage.setItem("martu2."+k, JSON.stringify(v)); }catch(e){} }
 };
-const S = { open: LIVE || (!STANDALONE && store.get("open", false)), view:"hoy", galDay:NOW.day, media:[] };
+const S = { open: LIVE || ((!STANDALONE || store.get("org", false)) && store.get("open", false)), view:"hoy", galDay:NOW.day, media:[] };
 ME = store.get("me", null); if (ME && !person(ME)) ME = null;
 
 /* ================= Componentes ================= */
@@ -583,7 +592,7 @@ const names = ids => {
    Cada una pone su nombre, apodo, foto y una descripción. Se guarda en profiles/<persona>;
    sin base compartida queda en este teléfono. */
 PEOPLE.forEach(p => { p._base = {name:p.name, nick:p.nick}; p.bio = ""; p.photoUrl = ""; });
-const ASSET_ID = /^[A-Za-z0-9_-]{8,64}$/;
+const ASSET_ID = /^(?!.*\.\.)[A-Za-z0-9_.\/-]{8,140}$/;
 S.profiles = store.get("profiles", {});
 function applyProfiles(){
   PEOPLE.forEach(p => {
@@ -593,7 +602,7 @@ function applyProfiles(){
     p.nick = p.bride ? p._base.nick : (txt(pr.nick, 28) || p._base.nick);
     p.bio = txt(pr.bio, 160);
     p.photoUrl = typeof pr.photoData === "string" && /^data:image\/jpeg;base64,[A-Za-z0-9+/=]+$/.test(pr.photoData) ? pr.photoData
-      : (typeof pr.photo === "string" && ASSET_ID.test(pr.photo) ? "/_blob/" + pr.photo : "");
+      : (typeof pr.photo === "string" && ASSET_ID.test(pr.photo) ? blobUrl(pr.photo) : "");
     p.uid = typeof pr.uid === "string" ? pr.uid : null;
   });
 }
@@ -634,10 +643,12 @@ function profileSheet(first = false){
   body.addEventListener("input", onInput);
   document.getElementById("pf-file").addEventListener("change", async e => {
     const f = e.target.files[0]; e.target.value = ""; if (!f) return;
+    const btn = document.getElementById("pf-save"); btn.disabled = true; btn.textContent = "Preparando la foto…";
     try{
       PF.blob = await squareJpeg(f); PF.removed = false;
       document.getElementById("pf-av").innerHTML = `<img src="${URL.createObjectURL(PF.blob)}" alt="">`;
     }catch(err){ toast("No se pudo leer esa foto. Probá con otra."); }
+    btn.disabled = false; btn.textContent = "Guardar perfil";
   });
   sheetCleanup = () => { body.removeEventListener("input", onInput); PF = null; };
 }
@@ -742,10 +753,23 @@ function renderCover(){
            <button class="btn btn-ghost" data-act="itinerary">Ver itinerario</button>`
         : `<button class="btn btn-primary btn-block" data-act="itinerary">Ver itinerario</button>`}
     </div>
-    ${!LIVE && !STANDALONE && (!SH.runtime || SH.owner) ? `<button class="preview-toggle" role="switch" aria-checked="${S.open}" data-act="toggle-open">
+    ${!LIVE && (STANDALONE ? store.get("org", false) : (!SH.runtime || SH.owner)) ? `<button class="preview-toggle" role="switch" aria-checked="${S.open}" data-act="toggle-open">
       Vista previa: ya estamos en Búzios <span class="switch"></span>
     </button>` : ""}`;
 }
+/* Organizadora: 5 toques seguidos en la cuenta regresiva piden el PIN que habilita la vista previa en este teléfono */
+let orgTaps = 0, orgT = 0;
+document.getElementById("cover").addEventListener("click", e => {
+  if (!STANDALONE || LIVE || store.get("org", false) || !e.target.closest("#countdown")) return;
+  const now = Date.now(); orgTaps = now - orgT < 1500 ? orgTaps + 1 : 1; orgT = now;
+  if (orgTaps < 5 || document.getElementById("org-form")) return;
+  const f = document.createElement("form"); f.id = "org-form"; f.className = "card"; f.style.cssText = "display:flex;gap:8px;width:100%;max-width:360px";
+  f.innerHTML = `<label for="org-pin" style="position:absolute;left:-9999px">PIN de organizadora</label><input class="input" id="org-pin" placeholder="PIN de organizadora" autocomplete="off" style="flex:1;min-width:0"><button class="btn btn-primary" type="submit">OK</button>`;
+  document.getElementById("countdown").after(f); document.getElementById("org-pin").focus();
+  f.addEventListener("submit", ev => { ev.preventDefault();
+    if (document.getElementById("org-pin").value.trim().toUpperCase() === ORG_PIN){ store.set("org", true); renderCover(); toast("Vista previa habilitada en este teléfono"); }
+    else { f.remove(); toast("PIN incorrecto"); } });
+});
 setInterval(() => {
   const el = document.getElementById("countdown");
   if (!el || S.open || document.getElementById("cover").hidden) return;
@@ -1339,7 +1363,7 @@ const mcTeamDays = () => DAYS.filter(d => d.n <= 6 && turn(d.n).cocinan.length).
 const mcVotableDays = () => mcTeamDays().filter(d => d <= NOW.day);
 function dishOf(d){
   const x = S.dish[d] || {};
-  const url = typeof x.photoData === "string" && /^data:image\/jpeg;base64,/.test(x.photoData) ? x.photoData : (typeof x.photo === "string" && ASSET_ID.test(x.photo) ? "/_blob/" + x.photo : "");
+  const url = typeof x.photoData === "string" && /^data:image\/jpeg;base64,/.test(x.photoData) ? x.photoData : (typeof x.photo === "string" && ASSET_ID.test(x.photo) ? blobUrl(x.photo) : "");
   return {name: typeof x.name === "string" ? x.name.slice(0, 50) : "", url};
 }
 function screen_masterchef(){
@@ -1428,8 +1452,10 @@ function dishSheet(d){
     `<button class="btn btn-primary btn-block" id="dish-save" data-act="dish-save">Guardar</button>`);
   document.getElementById("dish-file").addEventListener("change", async e => {
     const f = e.target.files[0]; e.target.value = ""; if (!f) return;
+    const btn = document.getElementById("dish-save"); btn.disabled = true; btn.textContent = "Preparando la foto…";
     try{ DISH.blob = await resizeJpeg(f); document.getElementById("dish-prev").innerHTML = `<img src="${URL.createObjectURL(DISH.blob)}" alt="">`; }
     catch(err){ toast("No se pudo leer esa foto. Probá con otra."); }
+    btn.disabled = false; btn.textContent = "Guardar";
   });
   sheetCleanup = () => { DISH = null; };
 }
@@ -1734,6 +1760,31 @@ function bolSpin(){
   }, reduceMotion() ? 0 : 2300);
 }
 
+/* ================= Código del grupo (copia instalable) ================= */
+function screenCodigo(){
+  return `<header class="screen-head"><div class="grow"><div class="eyebrow">Una sola vez</div><h1 class="h-screen">Código del grupo</h1></div></header>
+  <p class="muted" style="margin:0">Escribí el código que pasó Feda por WhatsApp. Así ves lo mismo que las demás.</p>
+  <form class="card" id="code-form" style="display:flex;flex-direction:column;gap:12px">
+    <div class="field"><label for="code-in">Código</label><input class="input" id="code-in" autocomplete="off" autocapitalize="characters" spellcheck="false" placeholder="BUZIOS-XXXX-XXXX" style="text-transform:uppercase;letter-spacing:.06em"></div>
+    <div id="code-err" role="alert"></div>
+    <button class="btn btn-primary btn-block" type="submit" id="code-go">Entrar</button>
+  </form>`;
+}
+function after_codigo(){
+  document.getElementById("code-form").addEventListener("submit", async e => {
+    e.preventDefault();
+    const inp = document.getElementById("code-in"), err = document.getElementById("code-err"), btn = document.getElementById("code-go");
+    const code = inp.value.trim().toUpperCase().replace(/\s+/g, "");
+    if (!code){ err.innerHTML = `<span class="error">Escribí el código.</span>`; return; }
+    btn.disabled = true; btn.textContent = "Revisando…"; err.innerHTML = "";
+    try{
+      if (await supaGrupoValido(code)){ store.set("grupo", code); inp.blur(); await connectSupa(); toast("Listo, ya estás en el grupo"); return; }
+      err.innerHTML = `<span class="error">Ese código no existe. Revisalo y probá de nuevo.</span>`;
+    }catch(x){ err.innerHTML = `<span class="error">No hay conexión. Probá de nuevo en un rato.</span>`; }
+    btn.disabled = false; btn.textContent = "Entrar";
+  });
+}
+
 /* ================= Quién sos ================= */
 function screenWho(){
   return `<header class="screen-head"><div class="grow"><div class="eyebrow">Una sola vez</div><h1 class="h-screen">¿Quién sos?</h1></div></header>
@@ -1785,8 +1836,14 @@ const MORE_ACTIONS = {
       }catch(e){ if (!e || e.code !== "declined") toast("No se pudo guardar. Mantené apretada la foto para guardarla."); }
       return;
     }
-    const a = document.createElement("a"); a.href = m.src; a.download = `buzios-${m.id}.${m.type === "video" ? "mp4" : m.sample ? "svg" : "jpg"}`;
-    document.body.appendChild(a); a.click(); a.remove();
+    try{
+      const blob = await (await fetch(m.src)).blob();
+      const ext = ({"image/jpeg":"jpg","image/png":"png","image/webp":"webp","image/gif":"gif","video/mp4":"mp4","video/webm":"webm","video/quicktime":"mov","image/svg+xml":"svg"})[blob.type] || "jpg";
+      const file = new File([blob], `buzios-${String(m.id).slice(0,8)}.${ext}`, {type:blob.type});
+      if (navigator.canShare && navigator.canShare({files:[file]})){ await navigator.share({files:[file]}); return; }
+      const url = URL.createObjectURL(blob), a = document.createElement("a"); a.href = url; a.download = file.name;
+      document.body.appendChild(a); a.click(); a.remove(); setTimeout(() => URL.revokeObjectURL(url), 4000);
+    }catch(e){ if (!e || e.name !== "AbortError") toast("No se pudo guardar. Mantené apretada la foto para guardarla."); }
   },
   "nominate": async () => {
     const m = S.media.find(x => x.id === viewerId); if (!m) return;
@@ -1835,7 +1892,7 @@ const MORE_ACTIONS = {
 /* ================= Datos compartidos =================
    Con la base de la página (db) todas ven lo mismo en vivo. Sin ella (archivo local o sin sesión),
    la app muestra datos de ejemplo que quedan solo en este teléfono. */
-const SH = {on:false, db:null, assets:null, dl:null, uid:null, owner:false, runtime:!!(window.claude && window.claude.use), loading:false, stale:false, err:""};
+const SH = {grupo:null, on:false, db:null, assets:null, dl:null, uid:null, owner:false, runtime:!!(window.claude && window.claude.use), loading:false, stale:false, err:""};
 let sheetRefresh = null, refreshPending = false;
 function refresh(){
   const a = document.activeElement;
@@ -1850,11 +1907,125 @@ async function write(fn, okMsg){
   try{ await fn(SH.db); if (okMsg) toast(okMsg); return true; }
   catch(e){
     if (e && e.code === "unavailable"){ try{ await new Promise(r => setTimeout(r, 600 + Math.random()*600)); await fn(SH.db); if (okMsg) toast(okMsg); return true; }catch(e2){ e = e2; } }
-    toast(e && e.code === "quota_exceeded" ? "La base de la app está llena: hay que borrar cosas viejas." : e && e.code === "invalid_argument" ? "No tenés permiso para guardar. Pedile a Feda que te invite como editora." : "No se pudo guardar. Revisá la conexión y probá de nuevo.");
+    toast(e && e.code === "quota_exceeded" ? "La base de la app está llena: hay que borrar cosas viejas." : e && e.code === "invalid_argument" ? (STANDALONE ? "No se pudo guardar: revisá el código del grupo." : "No tenés permiso para guardar. Pedile a Feda que te invite como editora.") : "No se pudo guardar. Revisá la conexión y probá de nuevo.");
     return false;
   }
 }
+/* ================= Supabase (copia instalable) =================
+   Misma interfaz que la base de claude.ai: collection(...).onSnapshot/add, doc(...).get/set/update.
+   Todo vive en la tabla «docs» y solo se ve con el código del grupo (encabezado x-grupo).
+   Las novedades se traen cada 4 segundos mientras la app está abierta. */
+const SUPA = {url:"https://zcgfnkpdqlzildfmmsex.supabase.co", key:"sb_publishable_qOfEb_doBfkb99eKeSCjrQ_oaUm8EH4", bucket:"fotos"};
+const ORG_PIN = "FEDA-1911";   // habilita la vista previa antes del viaje en este teléfono
+const rid = () => Date.now().toString(36) + Math.random().toString(36).slice(2, 9);
+function deepMerge(a, b){
+  const out = {...a};
+  for (const k in b){
+    const v = b[k];
+    out[k] = v && typeof v === "object" && !Array.isArray(v) && a && typeof a[k] === "object" && a[k] && !Array.isArray(a[k]) ? deepMerge(a[k], v) : v;
+  }
+  return out;
+}
+async function supaGrupoValido(code){
+  const r = await fetch(`${SUPA.url}/rest/v1/rpc/es_grupo`, {method:"POST", headers:{apikey:SUPA.key, "Content-Type":"application/json"}, body:JSON.stringify({c:code})});
+  if (!r.ok) throw new Error("red");
+  return (await r.json()) === true;
+}
+function supaDB(grupo){
+  const H = {apikey:SUPA.key, "x-grupo":grupo};
+  const cache = {}, subs = {}, seen = {};
+  let since = "1970-01-01T00:00:00Z", started = false, busy = false, again = false;
+  const snap = col => {
+    const docs = [...(cache[col] || new Map())].map(([id, data]) => ({id, exists:true, data:() => data, metadata:{fromCache:false, hasPendingWrites:false}}));
+    return {docs, size:docs.length, empty:!docs.length, docChanges:() => [], metadata:{fromCache:!started, hasPendingWrites:false}};
+  };
+  const emit = cols => cols.forEach(c => (subs[c] || []).forEach(s => { try{ s.next(snap(c)); }catch(e){ console.error(e); } }));
+  const errOf = r => ({code: r.status === 401 || r.status === 403 ? "invalid_argument" : r.status >= 500 || r.status === 0 ? "unavailable" : "invalid_argument"});
+  async function poll(){
+    if (busy){ again = true; return; }
+    busy = true;
+    try{
+      // 5 s de solapamiento para no perder escrituras que llegan casi al mismo tiempo
+      const from = new Date(new Date(since).getTime() - 5000).toISOString();
+      const r = await fetch(`${SUPA.url}/rest/v1/docs?select=col,id,data,updated_at&updated_at=gt.${encodeURIComponent(from)}&order=updated_at.asc&limit=1000`, {headers:H, cache:"no-store"});
+      if (!r.ok) throw errOf(r);
+      const rows = await r.json(), touched = new Set();
+      for (const row of rows){
+        const key = row.col + "/" + row.id, sig = row.updated_at + JSON.stringify(row.data);
+        if (seen[key] !== sig){ seen[key] = sig; (cache[row.col] || (cache[row.col] = new Map())).set(row.id, row.data); touched.add(row.col); }
+        if (row.updated_at > since) since = row.updated_at;
+      }
+      if (!started){ started = true; emit(Object.keys(subs)); } else emit([...touched]);
+      if (rows.length === 1000) again = true;
+    }catch(e){
+      Object.values(subs).flat().forEach(s => s.error && s.error({code:(e && e.code) || "unavailable"}));
+    }finally{
+      busy = false;
+      if (again){ again = false; setTimeout(poll, 50); }
+    }
+  }
+  async function put(col, id, data){
+    (cache[col] || (cache[col] = new Map())).set(id, data); emit([col]);      // se ve al instante
+    let r;
+    try{
+      r = await fetch(`${SUPA.url}/rest/v1/docs`, {method:"POST", headers:{...H, "Content-Type":"application/json", Prefer:"resolution=merge-duplicates,return=minimal"}, body:JSON.stringify({grupo, col, id, data})});
+    }catch(e){ throw {code:"unavailable"}; }
+    if (!r.ok) throw errOf(r);
+    poll();
+  }
+  const docRef = (col, id) => ({
+    id, path: col + "/" + id,
+    async get(){ await poll(); const d = cache[col] && cache[col].get(id); return {id, exists:!!d, data:() => d}; },
+    set: data => put(col, id, data),
+    async update(data){ const cur = cache[col] && cache[col].get(id); if (!cur) throw {code:"invalid_argument"}; await put(col, id, deepMerge(cur, data)); }
+  });
+  const db = {
+    collection: col => ({
+      onSnapshot(next, error){
+        (subs[col] || (subs[col] = [])).push({next, error});
+        if (started) setTimeout(() => next(snap(col)), 0);
+        return () => { subs[col] = (subs[col] || []).filter(s => s.next !== next); };
+      },
+      async add(data){ const id = rid(); await put(col, id, data); return docRef(col, id); },
+      doc: id => docRef(col, id || rid())
+    }),
+    doc: path => { const p = path.split("/"), id = p.pop(); return docRef(p.join("/"), id); }
+  };
+  poll();
+  setInterval(() => { if (!document.hidden) poll(); }, 4000);
+  document.addEventListener("visibilitychange", () => { if (!document.hidden) poll(); });
+  return db;
+}
+function supaAssets(grupo){
+  const EXT = {"image/jpeg":"jpg","image/png":"png","image/webp":"webp","image/gif":"gif","video/mp4":"mp4","video/webm":"webm","video/quicktime":"mov"};
+  return {
+    async upload(blob, opts = {}){
+      const type = opts.type || blob.type || "";
+      if (!EXT[type]) throw {code:"unsupported_type"};
+      if (blob.size > 50 * 1024 * 1024) throw {code:"too_large"};
+      const name = `${grupo}/${rid()}.${EXT[type]}`;
+      let r;
+      try{ r = await fetch(`${SUPA.url}/storage/v1/object/${SUPA.bucket}/${name}`, {method:"POST", headers:{apikey:SUPA.key, "Content-Type":type}, body:blob}); }
+      catch(e){ throw {code:"store_unavailable"}; }
+      if (!r.ok){ const t = await r.text(); throw {code: r.status === 413 || /size|large/i.test(t) ? "too_large" : /mime|type/i.test(t) ? "unsupported_type" : "upstream_error"}; }
+      return {id:name, url:blobUrl(name)};
+    }
+  };
+}
+/* Dirección de una foto o video guardado: en Supabase o en claude.ai */
+function blobUrl(id){
+  return STANDALONE ? `${SUPA.url}/storage/v1/object/public/${SUPA.bucket}/${String(id).split("/").map(encodeURIComponent).join("/")}` : "/_blob/" + encodeURIComponent(id);
+}
+async function connectSupa(){
+  const grupo = store.get("grupo", null);
+  SH.grupo = grupo;
+  SH.uid = store.get("device", null) || (() => { const d = "d_" + rid(); store.set("device", d); return d; })();
+  if (!grupo){ route(); return; }
+  attachDb(supaDB(grupo), supaAssets(grupo));
+}
+
 async function connectShared(){
+  if (STANDALONE) return connectSupa();
   if (!SH.runtime) return;
   const use = n => window.claude.use(n).catch(() => null);
   const [db, user, assets, dl] = await Promise.all([use("db"), use("user"), use("assets"), use("downloads")]);
@@ -1862,6 +2033,9 @@ async function connectShared(){
   if (user){ SH.owner = await user.isOwner(); SH.uid = await user.id(); }
   if (!SH.owner && !LIVE && S.open){ S.open = false; }       // la vista previa es solo para quien organiza
   if (!db){ route(); return; }
+  await attachDb(db, assets);
+}
+async function attachDb(db, assets){
   SH.on = true; SH.db = db; SH.assets = assets; SH.loading = true;
   S.profiles = {}; applyProfiles(); S.turns = {}; S.dinner = {}; S.dish = {};
   S.expenses = []; S.payments = []; S.super = []; S.wall = []; S.media = []; S.votes = []; S.mcr = []; S.draws = [];
@@ -1876,7 +2050,7 @@ async function connectShared(){
   sub("payments", rows => S.payments = rows.filter(r => person(r.from) && person(r.to) && CUR[r.cur]));
   sub("super", rows => S.super = rows.sort((a,b) => byAt(b,a)));
   sub("wall", rows => S.wall = rows.sort((a,b) => byAt(b,a)));
-  sub("media", rows => S.media = rows.filter(r => r.asset && DAYS[r.day-1]).sort(byAt).map(r => ({...r, id:r._id, src:"/_blob/" + encodeURIComponent(r.asset), sample:false, dur:"", nominated:Object.values(r.noms || {}).some(Boolean)})));
+  sub("media", rows => S.media = rows.filter(r => r.asset && DAYS[r.day-1]).sort(byAt).map(r => ({...r, id:r._id, src:blobUrl(r.asset), sample:false, dur:"", nominated:Object.values(r.noms || {}).some(Boolean)})));
   sub("profiles", rows => { S.profiles = Object.fromEntries(rows.filter(r => person(r._id)).map(r => [r._id, r])); applyProfiles(); });
   sub("votes", rows => S.votes = rows);
   sub("turns", rows => { S.turns = Object.fromEntries(rows.filter(r => DAYS[Number(r._id)-1]).map(r => [Number(r._id), r])); });
@@ -1911,9 +2085,10 @@ function render(){
     renderCover(); cover.hidden = false; main.innerHTML = ""; bar.hidden = true; return;
   }
   cover.hidden = true; bar.hidden = false;
-  main.innerHTML = `<div class="screen" id="screen-${ME ? v : "quien"}">${banner()}${ME ? screenFor(v) : screenWho()}</div>`;
+  main.innerHTML = `<div class="screen" id="screen-${ME ? v : "quien"}">${banner()}${STANDALONE && !SH.grupo ? screenCodigo() : ME ? screenFor(v) : screenWho()}</div>`;
   const tab = SUB[v] || v;
   bar.innerHTML = TABS.map(([id,label,ic]) => `<a href="#${id}" ${tab === id ? 'aria-current="page"' : ""}>${icon(ic)}<span>${label}</span></a>`).join("");
+  if (STANDALONE && !SH.grupo) return after_codigo();
   if (ME && window["after_" + v]) window["after_" + v]();
 }
 function route(){
