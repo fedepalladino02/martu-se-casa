@@ -484,7 +484,11 @@ const TRIP_DAY0 = Date.UTC(2026, 10, 19);
 function brtNow(){ const d = new Date(Date.now() - 3*3600e3); return {day: Math.floor((Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate()) - TRIP_DAY0)/864e5) + 1, min: d.getUTCHours()*60 + d.getUTCMinutes()}; }
 const REAL = brtNow();
 const LIVE = REAL.day >= 1;
-const NOW = LIVE ? {day: Math.min(REAL.day, 8), min: REAL.day > 8 ? 24*60 : REAL.min} : {day:5, min:15*60+10};
+/* Vista previa de organizadora (simula el lunes 23). Antes del viaje, la copia instalable entra en modo «antes del viaje»:
+   perfiles, gastos, súper, muro y equipos andan; itinerario, álbum y cena siguen con candado hasta el jueves 19 a las 00:00. */
+const PREVIEW = !LIVE && (() => { try{ const g = k => JSON.parse(localStorage.getItem("martu2." + k) || "false"); return g("open") && (!STANDALONE || g("org")); }catch(e){ return false; } })();
+const PRE = STANDALONE && !LIVE && !PREVIEW;
+const NOW = LIVE ? {day: Math.min(REAL.day, 8), min: REAL.day > 8 ? 24*60 : REAL.min} : PREVIEW || !STANDALONE ? {day:5, min:15*60+10} : {day:1, min:0};
 
 /* t = hora que se muestra, m = minuto del día para ordenar, r = rango completo si lo hay */
 const DAYS = [
@@ -552,7 +556,7 @@ const store = {
   get(k,d){ try{ const v = localStorage.getItem("martu2."+k); return v ? JSON.parse(v) : d; }catch(e){ return d; } },
   set(k,v){ try{ localStorage.setItem("martu2."+k, JSON.stringify(v)); }catch(e){} }
 };
-const S = { open: LIVE || ((!STANDALONE || store.get("org", false)) && store.get("open", false)), view:"hoy", galDay:NOW.day, media:[] };
+const S = { open: LIVE || PRE || PREVIEW || (!STANDALONE && store.get("open", false)), view:"hoy", galDay:NOW.day, media:[] };
 ME = store.get("me", null); if (ME && !person(ME)) ME = null;
 
 /* ================= Componentes ================= */
@@ -731,7 +735,7 @@ function tripParts(){
   return [[pad(NOW.day),"día"],[pad(6 - NOW.day), 6 - NOW.day === 1 ? "noche más" : "noches más"],[String(PEOPLE.length),"girlies"],[String(S.media.length),"fotos"]];
 }
 function renderCover(){
-  const parts = S.open ? tripParts() : countdownParts(TRIP_START);
+  const parts = S.open && !PRE ? tripParts() : countdownParts(TRIP_START);
   document.getElementById("cover").innerHTML = `
     <div class="postal-wrap"><div class="postal"><div class="postal-in">
       <span class="eyebrow">Búzios · 19 al 26 de noviembre</span>
@@ -745,7 +749,7 @@ function renderCover(){
       ${ilu("concha","right:0;bottom:12%;width:19%;transform:rotate(10deg)")}
       ${BRIDE_SVG}
     </div>
-    <span class="pill-label">${S.open ? "Así va el viaje" : "Faltan para Búzios"}</span>
+    <span class="pill-label">${S.open && !PRE ? "Así va el viaje" : "Faltan para Búzios"}</span>
     <div class="countdown" id="countdown">${parts.map(([v,l]) => `<div class="cd"><b>${v}</b><span>${l}</span></div>`).join("")}</div>
     <div class="cover-actions">
       ${S.open
@@ -753,7 +757,7 @@ function renderCover(){
            <button class="btn btn-ghost" data-act="itinerary">Ver itinerario</button>`
         : `<button class="btn btn-primary btn-block" data-act="itinerary">Ver itinerario</button>`}
     </div>
-    ${!LIVE && (STANDALONE ? store.get("org", false) : (!SH.runtime || SH.owner)) ? `<button class="preview-toggle" role="switch" aria-checked="${S.open}" data-act="toggle-open">
+    ${!LIVE && (STANDALONE ? store.get("org", false) : (!SH.runtime || SH.owner)) ? `<button class="preview-toggle" role="switch" aria-checked="${STANDALONE ? PREVIEW : S.open}" data-act="toggle-open">
       Vista previa: ya estamos en Búzios <span class="switch"></span>
     </button>` : ""}`;
 }
@@ -772,14 +776,14 @@ document.getElementById("cover").addEventListener("click", e => {
 });
 setInterval(() => {
   const el = document.getElementById("countdown");
-  if (!el || S.open || document.getElementById("cover").hidden) return;
+  if (!el || (S.open && !PRE) || document.getElementById("cover").hidden) return;
   const parts = countdownParts(TRIP_START);
   el.querySelectorAll("b").forEach((b,i) => { b.textContent = parts[i][0]; });
 }, 1000);
 
 const tlRow = (it, cls="") => `<div class="tl ${cls}"><span class="t">${esc(it.t)}</span><span class="rail"><span class="dot"></span></span><div class="body"><b>${esc(it.a)}</b><span>${esc([it.r, it.w].filter(Boolean).join(" · "))}</span></div></div>`;
 /* Anti-spoiler: cada día se revela a las 00:00 de ese día. Antes del viaje, todo bloqueado. */
-const revealed = n => S.open && n <= NOW.day;
+const revealed = n => S.open && !PRE && n <= NOW.day;
 const revealWhen = d => "el " + d.full.toLowerCase().replace(" de noviembre","") + " a las 00:00";
 function itinerarySheet(){
   openSheet("Itinerario", `<p class="small muted" style="margin:0">Cada día se revela a las 00:00, así Martu no se entera de nada antes de tiempo.</p>` + DAYS.map(d => revealed(d.n) ? `
@@ -800,7 +804,30 @@ function iluFor(a){
   if (a.includes("centro") || a.includes("merend")) return "chanclas";
   return "estrella";
 }
+function screenAntes(){
+  const ms = Math.max(0, TRIP_DAY0 + 3*3600e3 - Date.now()), d = Math.floor(ms/864e5), h = Math.floor(ms/36e5) % 24;
+  const pr = S.profiles[ME] || {}, listo = !!pr.at;
+  return `
+  <header class="topbar">
+    <div class="grow"><div class="eyebrow">Antes del viaje · Búzios</div><div class="date">${d ? `Faltan ${d} ${d === 1 ? "día" : "días"}` : `Faltan ${h} h`}</div></div>
+    ${avatar(ME, 40)}
+  </header>
+  <article class="next">
+    ${ilu("salvavidas","position:absolute;right:14px;top:14px;width:64px")}
+    <span class="eyebrow" style="color:var(--cobalt)">Jueves 19 de noviembre</span>
+    <h2 class="what" style="max-width:75%">Arrancamos el viaje</h2>
+    <span class="small">El itinerario se abre día por día desde el jueves a las 00:00. Hasta entonces, lo que viene queda con candado.</span>
+    <button class="btn btn-primary btn-block" data-act="itinerary">Ver los días</button>
+  </article>
+  <div class="list">
+    <button class="list-item" data-act="profile">${avatar(ME, 44)}<span style="flex:1;min-width:0"><b>${listo ? "Tu perfil" : "Completá tu perfil"}</b><br><span class="small muted">${listo ? "Ya está. Podés cambiarlo cuando quieras." : "Nombre, foto, apodo y algo sobre vos"}</span></span>${icon("chev","chev")}</button>
+    <a class="list-item" href="#integrantes" style="text-decoration:none">${ilu("bikini","width:40px")}<span style="flex:1;min-width:0"><b>The Girlies</b><br><span class="small muted">Mirá los perfiles de las demás</span></span>${icon("chev","chev")}</a>
+    <a class="list-item" href="#gastos" style="text-decoration:none">${ilu("limon","width:40px")}<span style="flex:1;min-width:0"><b>Gastos</b><br><span class="small muted">Cargá lo que ya se pagó: seña, transfer, pasajes…</span></span>${icon("chev","chev")}</a>
+    <a class="list-item" href="#masterchef" data-tab="equipos" style="text-decoration:none">${ilu("sardinas","width:40px")}<span style="flex:1;min-width:0"><b>Equipos de MasterChef</b><br><span class="small muted">Sorteen quién cocina y quién lava cada día</span></span>${icon("chev","chev")}</a>
+  </div>`;
+}
 function screenHoy(){
+  if (PRE) return screenAntes();
   const day = DAYS[NOW.day-1];
   let nextIdx = day.items.findIndex(it => it.m > NOW.min);
   const nx = day.items[nextIdx === -1 ? day.items.length-1 : nextIdx];
@@ -887,6 +914,9 @@ function scene(i){
 })();
 const dayUnlocked = n => revealed(n);
 function screen_galeria(){
+  if (PRE) return `<header class="screen-head"><div class="grow"><div class="eyebrow">Álbum del viaje</div><h1 class="h-screen">Galería</h1></div></header>
+  ${lockState({open:false, title:"El álbum del viaje", when:"el jueves 19 a las 00:00", ilu:ilu("chanclas","width:44px")})}
+  <p class="small muted" style="margin:0">Desde el jueves, cada día tiene su álbum y todas pueden subir fotos y videos.</p>`;
   const d = DAYS[S.galDay-1];
   const items = S.media.filter(m => m.day === S.galDay);
   let body;
@@ -1236,18 +1266,20 @@ function turnRow(role, ids){
   return `<div class="turn"><span class="role eyebrow">${role}</span><div class="people">${ids.length ? ids.map(id => `<span class="p">${avatar(id, 44)}<span><b>${esc(who(id))}</b><small>${esc(person(id).nick)}</small></span></span>`).join("") : `<span class="muted">Sin sortear todavía</span>`}</div></div>`;
 }
 function screen_casa(){
-  const t = turn(NOW.day), open = voteOpen(), V = voteState(), total = V.options.reduce((s,o) => s + o.votes, 0);
+  const t = turn(NOW.day), open = !PRE && voteOpen(), V = voteState(), total = V.options.reduce((s,o) => s + o.votes, 0);
   const lead = [...V.options].sort((a,b) => b.votes - a.votes)[0];
   const pending = S.super.filter(x => !x.d).length;
   const missing = !t.cocinan.length || !t.lavan.length;
   return `
-  <header class="screen-head"><div class="grow"><div class="eyebrow">${DAYS[NOW.day-1].short} · ${esc(HOUSE.split(",")[0])}</div><h1 class="h-screen">Casa</h1></div></header>
-  <section class="card" aria-labelledby="turnos-h">
+  <header class="screen-head"><div class="grow"><div class="eyebrow">${PRE ? "Antes del viaje" : DAYS[NOW.day-1].short} · ${esc(HOUSE.split(",")[0])}</div><h1 class="h-screen">Casa</h1></div></header>
+  ${PRE ? `<section class="card" style="display:flex;flex-direction:column;gap:10px"><h2 class="h-card" style="margin:0">Antes de llegar</h2>
+    <span class="small muted">Ya pueden sortear quién cocina y quién lava cada día, y armar la lista del súper.</span>
+    <a class="btn btn-primary btn-block" href="#masterchef" data-tab="equipos" style="text-decoration:none">Sortear los turnos</a></section>` : `<section class="card" aria-labelledby="turnos-h">
     <div class="section-h" style="margin:0"><h2 class="h-card" id="turnos-h">Turnos de hoy</h2><span class="chip">${esc(t.dinner)}</span></div>
     ${turnRow("Cocinan", t.cocinan)}
     ${turnRow("Lavan", t.lavan)}
     ${missing && NOW.day <= 6 ? `<a class="btn btn-secondary btn-block" href="#masterchef" data-tab="equipos" style="text-decoration:none;margin-top:8px">Sortear los turnos de hoy</a>` : ""}
-  </section>
+  </section>`}
   ${open ? `
   <section class="vote-card" aria-labelledby="vote-h">
     ${ilu("rama")}
@@ -1360,7 +1392,7 @@ function mcStats(d){
 }
 const fmt1 = v => v.toFixed(1).replace(".", ",");
 const mcTeamDays = () => DAYS.filter(d => d.n <= 6 && turn(d.n).cocinan.length).map(d => d.n);
-const mcVotableDays = () => mcTeamDays().filter(d => d <= NOW.day);
+const mcVotableDays = () => PRE ? [] : mcTeamDays().filter(d => d <= NOW.day);
 function dishOf(d){
   const x = S.dish[d] || {};
   const url = typeof x.photoData === "string" && /^data:image\/jpeg;base64,/.test(x.photoData) ? x.photoData : (typeof x.photo === "string" && ASSET_ID.test(x.photo) ? blobUrl(x.photo) : "");
@@ -2157,7 +2189,10 @@ function toast(msg){
 const ACTIONS = {
   "close-sheet": closeSheet,
   "itinerary": itinerarySheet,
-  "toggle-open": () => { S.open = !S.open; store.set("open", S.open); renderCover(); toast(S.open ? "Modo viaje: la app está abierta" : "Volvimos a la cuenta regresiva"); },
+  "toggle-open": () => {
+    if (STANDALONE){ store.set("open", !PREVIEW); location.reload(); return; }
+    S.open = !S.open; store.set("open", S.open); renderCover(); toast(S.open ? "Modo viaje: la app está abierta" : "Volvimos a la cuenta regresiva");
+  },
   ...MORE_ACTIONS
 };
 document.addEventListener("click", e => {
